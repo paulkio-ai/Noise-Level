@@ -1,4 +1,3 @@
-# Noise-Level
 <!doctype html>
 <html lang="en">
 <head>
@@ -65,6 +64,13 @@ summary{font-weight:700;cursor:pointer;min-height:40px;display:flex;align-items:
 .field output{font-variant-numeric:tabular-nums;color:var(--accent);font-weight:700}
 input[type=range]{width:100%;accent-color:var(--accent);height:32px}
 select{font:inherit;padding:10px;border-radius:10px;border:2px solid var(--line);background:var(--bg);color:var(--fg);width:100%}
+.sub{font-family:var(--display);font-size:1.2rem;margin:12px 0 0}
+.row{display:flex;flex-wrap:wrap;gap:8px}
+.row button{min-height:44px;padding:8px 14px}
+.row button:disabled{opacity:.45;cursor:default}
+#recBtn.recording{background:var(--hot);border-color:var(--hot);color:#fff}
+.upload{font-weight:400 !important;font-size:.9rem;color:var(--muted)}
+input[type=file]{font:inherit;font-size:.9rem;max-width:100%}
 .note{color:var(--muted);font-size:.9rem;max-width:70ch}
 .error{color:var(--hot);font-weight:700}
 
@@ -147,6 +153,42 @@ select{font:inherit;padding:10px;border-radius:10px;border:2px solid var(--line)
         <span class="hint">Pick the Boxlight's built-in mic if several are listed. Names appear after you press Start.</span>
       </div>
     </div>
+    <h2 class="sub">Warning voice</h2>
+    <div class="settings">
+      <div class="field">
+        <label for="voiceMode">What plays when the warning appears</label>
+        <select id="voiceMode">
+          <option value="tts">Computer voice</option>
+          <option value="clip">My recording</option>
+        </select>
+        <span class="hint">The Voice warning ON/OFF button still mutes either one.</span>
+      </div>
+      <div class="field">
+        <label>Your own recording</label>
+        <div class="row">
+          <button id="recBtn" type="button">● Record</button>
+          <button id="playBtn" type="button">▶ Play</button>
+          <button id="delBtn" type="button">Delete</button>
+        </div>
+        <label class="upload" for="clipFile">or upload an audio file (MP3, WAV, M4A)</label>
+        <input type="file" id="clipFile" accept="audio/*">
+        <span class="hint" id="recStatus">No recording yet.</span>
+      </div>
+      <div class="field">
+        <label for="voiceName">Computer voice</label>
+        <select id="voiceName"><option value="">Default voice</option></select>
+        <span class="hint">The voices available depend on the device.</span>
+      </div>
+      <div class="field">
+        <label for="pitch">Pitch <output id="pitchOut">1.00×</output></label>
+        <input type="range" id="pitch" min="0.1" max="1.6" step="0.05" value="1">
+        <span class="hint">Lower is deeper.</span>
+      </div>
+      <div class="field">
+        <label for="rate">Speed <output id="rateOut">1.00×</output></label>
+        <input type="range" id="rate" min="0.6" max="1.4" step="0.05" value="1">
+      </div>
+    </div>
     <p class="note">Readings are approximate. Browsers report sound relative to the microphone, not a certified decibel meter, so set the limit by watching the meter during a normal class and choosing a number just above where it sits when the volume is fine.</p>
   </details>
 </main>
@@ -178,14 +220,19 @@ select{font:inherit;padding:10px;border-radius:10px;border:2px solid var(--line)
     duration: store.get('duration', 6),
     calib: store.get('calib', 0),
     voice: store.get('voice', true),
-    mic: store.get('mic', '')
+    mic: store.get('mic', ''),
+    voiceMode: store.get('voiceMode', 'tts'),
+    voiceName: store.get('voiceName', ''),
+    pitch: store.get('pitch', 1),
+    rate: store.get('rate', 1)
   };
 
   // ---------- settings UI ----------
   const fmt = {
     threshold: v => v + ' dB', hold: v => Number(v).toFixed(1) + ' s',
     cooldown: v => v + ' s', duration: v => v + ' s',
-    calib: v => (v >= 0 ? '+' : '') + v + ' dB'
+    calib: v => (v >= 0 ? '+' : '') + v + ' dB',
+    pitch: v => Number(v).toFixed(2) + '×', rate: v => Number(v).toFixed(2) + '×'
   };
   for (const k of Object.keys(fmt)) {
     const input = $(k), out = $(k + 'Out');
@@ -336,7 +383,7 @@ select{font:inherit;padding:10px;border-radius:10px;border:2px solid var(--line)
     alertUntil = Math.min(alertUntil, Date.now());
     if (!quietUntil || quietUntil < Date.now()) quietUntil = Date.now() + s.cooldown * 1000;
   }
-  $('dismissBtn').addEventListener('click', () => { clearTimeout(hideTimer); hideAlert(); if ('speechSynthesis' in window) speechSynthesis.cancel(); });
+  $('dismissBtn').addEventListener('click', () => { clearTimeout(hideTimer); hideAlert(); stopVoice(); });
   $('testBtn').addEventListener('click', () => { quietUntil = 0; warn(); });
 
   function chime(){
@@ -354,20 +401,107 @@ select{font:inherit;padding:10px;border-radius:10px;border:2px solid var(--line)
       });
     } catch {}
   }
+  let clipAudio = null;
+  function stopVoice(){
+    if ('speechSynthesis' in window) speechSynthesis.cancel();
+    if (clipAudio) { clipAudio.pause(); clipAudio.currentTime = 0; }
+  }
+  function playClip(){
+    if (!clipUrl) return false;
+    stopVoice();
+    clipAudio = new Audio(clipUrl);
+    clipAudio.play().catch(() => {});
+    return true;
+  }
   function speak(){
+    if (s.voiceMode === 'clip' && playClip()) return;
     chime();
     if (!('speechSynthesis' in window)) return;
     speechSynthesis.cancel();
     setTimeout(() => {
       const u = new SpeechSynthesisUtterance(MESSAGE);
       const voices = speechSynthesis.getVoices();
-      const en = voices.find(v => /^en(-|_)US/i.test(v.lang)) || voices.find(v => /^en/i.test(v.lang));
-      if (en) u.voice = en;
-      u.rate = 1; u.pitch = 1; u.volume = 1;
+      const v = voices.find(v => v.name === s.voiceName)
+        || voices.find(v => /^en(-|_)US/i.test(v.lang)) || voices.find(v => /^en/i.test(v.lang));
+      if (v) u.voice = v;
+      u.rate = s.rate; u.pitch = s.pitch; u.volume = 1;
       speechSynthesis.speak(u);
     }, 450);
   }
-  if ('speechSynthesis' in window) speechSynthesis.getVoices();
+
+  // ---------- computer voice list ----------
+  function listVoices(){
+    if (!('speechSynthesis' in window)) return;
+    const voices = speechSynthesis.getVoices().filter(v => /^en/i.test(v.lang));
+    const sel = $('voiceName');
+    sel.innerHTML = '<option value="">Default voice</option>' +
+      voices.map(v => `<option>${v.name.replace(/</g,'&lt;')}</option>`).join('');
+    sel.value = voices.some(v => v.name === s.voiceName) ? s.voiceName : '';
+  }
+  if ('speechSynthesis' in window) { listVoices(); speechSynthesis.onvoiceschanged = listVoices; }
+  $('voiceName').addEventListener('change', e => { s.voiceName = e.target.value; store.set('voiceName', s.voiceName); });
+  $('voiceMode').value = s.voiceMode;
+  $('voiceMode').addEventListener('change', e => { s.voiceMode = e.target.value; store.set('voiceMode', s.voiceMode); });
+
+  // ---------- custom recording (kept in this browser) ----------
+  const idb = {
+    open(){ return new Promise((res, rej) => { const r = indexedDB.open('noise-monitor', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('kv');
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); },
+    async run(mode, fn){ const db = await this.open(); return new Promise((res, rej) => {
+      const q = fn(db.transaction('kv', mode).objectStore('kv')); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); },
+    get(k){ return this.run('readonly', st => st.get(k)); },
+    set(k, v){ return this.run('readwrite', st => st.put(v, k)); },
+    del(k){ return this.run('readwrite', st => st.delete(k)); }
+  };
+  let clipUrl = null, recorder = null, recTimer;
+
+  function renderClip(){
+    const has = !!clipUrl;
+    $('playBtn').disabled = !has; $('delBtn').disabled = !has;
+    $('voiceMode').querySelector('[value=clip]').disabled = !has;
+    if (!has && s.voiceMode === 'clip') { s.voiceMode = 'tts'; $('voiceMode').value = 'tts'; }
+    $('recStatus').textContent = has ? 'Recording saved on this device. Press Test warning to hear it.' : 'No recording yet. Press Record, say the warning, then press Stop.';
+  }
+  async function saveClip(blob){
+    if (clipUrl) URL.revokeObjectURL(clipUrl);
+    clipUrl = URL.createObjectURL(blob);
+    try { await idb.set('clip', blob); } catch {}
+    s.voiceMode = 'clip'; store.set('voiceMode', 'clip');
+    renderClip(); $('voiceMode').value = 'clip';
+  }
+  (async () => { try { const b = await idb.get('clip'); if (b) clipUrl = URL.createObjectURL(b); } catch {} renderClip(); })();
+
+  $('recBtn').addEventListener('click', async () => {
+    if (recorder && recorder.state === 'recording') { recorder.stop(); return; }
+    if (!window.MediaRecorder) return ($('recStatus').textContent = 'This browser cannot record. Upload an audio file instead.');
+    let st;
+    try { st = await navigator.mediaDevices.getUserMedia({ audio: s.mic ? { deviceId: { exact: s.mic } } : true }); }
+    catch { $('recStatus').textContent = 'Microphone access was blocked, so recording could not start.'; return; }
+    quietUntil = Date.now() + 60000;            // don't trigger warnings while recording
+    const chunks = [];
+    recorder = new MediaRecorder(st);
+    recorder.ondataavailable = e => e.data.size && chunks.push(e.data);
+    recorder.onstop = () => {
+      clearTimeout(recTimer);
+      st.getTracks().forEach(t => t.stop());
+      $('recBtn').textContent = '● Record'; $('recBtn').classList.remove('recording');
+      quietUntil = Date.now() + 2000;
+      if (chunks.length) saveClip(new Blob(chunks, { type: recorder.mimeType || 'audio/webm' }));
+    };
+    recorder.start();
+    $('recBtn').textContent = '■ Stop'; $('recBtn').classList.add('recording');
+    $('recStatus').textContent = 'Recording… say the warning now (stops by itself after 10 seconds).';
+    recTimer = setTimeout(() => recorder.state === 'recording' && recorder.stop(), 10000);
+  });
+  $('playBtn').addEventListener('click', playClip);
+  $('delBtn').addEventListener('click', async () => {
+    stopVoice();
+    if (clipUrl) URL.revokeObjectURL(clipUrl);
+    clipUrl = null; try { await idb.del('clip'); } catch {}
+    renderClip();
+  });
+  $('clipFile').addEventListener('change', e => { const f = e.target.files[0]; if (f) saveClip(f); e.target.value = ''; });
 
   // ---------- full screen & keys ----------
   $('fsBtn').addEventListener('click', async () => {
